@@ -215,6 +215,14 @@ def get_mix(nu_ghz, comp, param_dict_file=None, param_dict_override=None,
         # TODO: the line below may be wrong for radio maps!
         resp[np.where(nu_ghz == None)] = 0. #this case is appropriate for HI or other maps that contain no CMB-relevant signals (and also no CIB); they're assumed to be denoted by None in nu_ghz
         return resp
+    elif (comp == 'patchydark_tau_correct'): #patch dark screening (from https://arxiv.org/pdf/2307.15124.pdf) #Fiona remove correct at end
+        nu = 1.e9*np.asarray(nu_ghz).astype(float)
+        X = hplanck*nu/(kboltz*TCMB)
+        nu0 = 353e9
+        X0 = hplanck*nu0/(kboltz*TCMB)
+        resp = nu0/ nu * (1-np.exp(-X))/X * X0 / (1-np.exp(-X0))
+        resp[np.where(nu_ghz == None)] = 0. #this case is appropriate for HI or other maps that contain no CMB-relevant signals (and also no CIB); they're assumed to be denoted by None in nu_ghz
+        return resp
     else:
         print("unknown component specified")
         raise NotImplementedError
@@ -409,7 +417,7 @@ def get_mix_bandpassed(bp_list, comp, param_dict_file=None,bandpass_shifts=None,
                             #bnus = get_scaled_beams(ells,lbeam,cen_nu_ghz,nu_ghz,ccor_exp=ccor_exps[i]).swapaxes(0,1)
                             #assert np.all(np.isfinite(bnus))
 
-                if (comp == 'tSZ' or comp == 'mu' or comp == 'rSZ'): 
+                if (comp == 'tSZ' or comp == 'mu' or comp == 'rSZ' or comp == 'patchydark_tau_correct'): 
                     # Thermal SZ (y-type distortion) or mu-type distortion or relativistic tSZ
                     # following Sec. 3.2 of https://arxiv.org/pdf/1303.5070.pdf 
                     # -- N.B. IMPORTANT TYPO IN THEIR EQ. 35 -- see https://www.aanda.org/articles/aa/pdf/2014/11/aa21531-13.pdf
@@ -605,7 +613,7 @@ def get_mix_bandpassed(bp_list, comp, param_dict_file=None,bandpass_shifts=None,
 def get_test_fdict():
     import glob
     nus = np.geomspace(10,1000,100)
-    comps = ['CMB','kSZ','tSZ','mu','rSZ','CIB','CIB_Jysr','radio','radio_Jysr','CIB_Jysr_dbeta','CIB_dbeta','CIB_dT','CIB_Jysr_dT'] 
+    comps = ['CMB','kSZ','tSZ','mu','rSZ','CIB','CIB_Jysr','radio','radio_Jysr','CIB_Jysr_dbeta','CIB_dbeta','CIB_dT','CIB_Jysr_dT','patchydark_tau_correct'] 
     dirname = os.path.dirname(os.path.abspath(__file__))
     bp_list = glob.glob(dirname+"/../data/*.txt") + [None]
 
