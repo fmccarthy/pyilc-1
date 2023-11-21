@@ -5,6 +5,10 @@ import healpy as hp
 from astropy.io import fits
 import os
 import matplotlib
+
+
+import h5py #Fiona - we could make this optional if we don't want to include other dependencies
+
 matplotlib.use('pdf')
 matplotlib.rc('font', family='serif', serif='cm10')
 matplotlib.rc('text', usetex=True)
@@ -338,15 +342,15 @@ class scale_info(object):
         for a in range(info.N_freqs):
             if (self.freqs_to_use[j][a] == True) :
                 if not info.cross_ILC:
-                    filename_A = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'.fits'
+                    season_A = None
                 else:
-                    filename_A = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'_S1.fits'
-                    filename_B = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'_S2.fits'
-                wavelet_map_A = dgraded_mask * hp.read_map(filename_A, dtype=np.float64, verbose=False) #QUESTION: should we multiply by msk here or before waveletizing?
+                    season_A = 1
+                    season_B = 2
+                wavelet_map_A = dgraded_mask * self.load_wavelet_coeff_map(a,j,info,season=season_A) 
                 smoothed_maps_A[a] = hp.sphtfunc.smoothing(wavelet_map_A, FWHM_pix[j])
                 unsmoothed_maps_A[a] = wavelet_map_A
                 if info.cross_ILC:
-                    wavelet_map_B = dgraded_mask * hp.read_map(filename_B, dtype=np.float64, verbose=False) #QUESTION: should we multiply by msk here or before waveletizing?
+                    wavelet_map_B = dgraded_mask * self.load_wavelet_coeff_map(a,j,info,season=season_B) 
                     smoothed_maps_B[a] = hp.sphtfunc.smoothing(wavelet_map_B, FWHM_pix[j])
                     unsmoothed_maps_B[a] = wavelet_map_B
             
@@ -357,18 +361,7 @@ class scale_info(object):
                         start_at = 0
                     for b in range(start_at, info.N_freqs):
                         if (self.freqs_to_use[j][a] == True) and (self.freqs_to_use[j][b] == True):
-                            cov_filename = _cov_filename(info,a,b,j)
                             # read in wavelet coefficient maps constructed in previous step above
-                            '''
-                            if not info.cross_ILC:
-                                filename_A = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'.fits'
-                                filename_B = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(b)+'_scale'+str(j)+'.fits'
-                            else:
-                                filename_A = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'_S1.fits'
-                                filename_B = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(b)+'_scale'+str(j)+'_S2.fits'
-                            wavelet_map_A = dgraded_mask * hp.read_map(filename_A, dtype=np.float64, verbose=False) #QUESTION: should we multiply by msk here or before waveletizing?
-                            wavelet_map_B = dgraded_mask * hp.read_map(filename_B, dtype=np.float64, verbose=False)
-                            '''
                             wavelet_map_A = unsmoothed_maps_A[a]
                             wavelet_map_A_smoothed = smoothed_maps_A[a]
                             if info.cross_ILC: 
@@ -379,17 +372,12 @@ class scale_info(object):
                                 wavelet_map_B_smoothed = smoothed_maps_A[b]
 
                             assert len(wavelet_map_A) == len(wavelet_map_B), "cov mat map calculation: wavelet coefficient maps have different N_side"
-                            '''
-                            # first perform smoothing operation to get the "mean" maps
-                            wavelet_map_A_smoothed = hp.sphtfunc.smoothing(wavelet_map_A, FWHM_pix[j])
-                            wavelet_map_B_smoothed = hp.sphtfunc.smoothing(wavelet_map_B, FWHM_pix[j])
-                            # then construct the smoothed real-space freq-freq cov matrix element for this pair of frequency maps
-                            # note that the overall normalization of this cov matrix is irrelevant for the ILC weight calculation (it always cancels out)
-                            '''
 
                             cov_map_temp = hp.sphtfunc.smoothing( (wavelet_map_A - wavelet_map_A_smoothed)*(wavelet_map_B - wavelet_map_B_smoothed) , FWHM_pix[j])
                             cov_maps_temp.append( cov_map_temp  * fskyinv)
-                            hp.write_map(cov_filename, cov_map_temp, nest=False, dtype=np.float64, overwrite=False)
+
+                            self.save_covmap(a,b,j,info,cov_map_temp,)
+
         print('done computing all covariance maps at scale'+str(j),flush=True)
         return cov_maps_temp
 
@@ -562,12 +550,10 @@ class scale_info(object):
                         start_at = 0
                     for b in range(start_at, info.N_freqs):
                         if (self.freqs_to_use[j][a] == True) and (self.freqs_to_use[j][b] == True and flag==True):
-                            cov_filename = _cov_filename(info,a,b,j)
-                            exists = os.path.isfile(cov_filename)
+                            exists,cov_filename = self.load_covmap(a,b,j,info,query_exists = True)
                             if exists:
                                 print('needlet coefficient covariance map already exists:', cov_filename)
-                                cov_maps_temp.append( hp.read_map(cov_filename, dtype=np.float64) )
-
+                                cov_maps_temp.append(  self.load_covmap(a,b,j,info))
                             else:
                                 print('needlet coefficient covariance map not previously computed; computing all covariance maps at scale '+str(j)+' now...')
                                 flag=False
@@ -626,15 +612,13 @@ class scale_info(object):
                         start_at = 0
                     for b in range(start_at, info.N_freqs):
                         if (self.freqs_to_use[j][a] == True) and (self.freqs_to_use[j][b] == True and flag==True):
-                            cov_filename = _cov_filename(info,a,b,j)
-                            exists = os.path.isfile(cov_filename)
+                            exists,cov_filename = self.load_covmap(a,b,j,info,query_exists = True)
                             if exists:
+                                print('needlet coefficient covariance map already exists:', cov_filename)
                                 if not info.inv_covmat_exists:
-                                    print('needlet coefficient covariance map already exists:', cov_filename)
-                                    cov_maps_temp.append( hp.read_map(cov_filename, dtype=np.float64) )
+                                    cov_maps_temp.append(  self.load_covmap(a,b,j,info))
                                 else:
                                     cov_maps_temp.append(0)
-
                             else:
                                 print('needlet coefficient covariance map not previously computed; computing all covariance maps at scale '+str(j)+' now...')
                                 flag=False
@@ -756,6 +740,135 @@ class scale_info(object):
                     count+=1
             return weights
 
+    def fits_load_wavelet_coeff_map(self,frequency,scale,info,season=None,query_exists = False):
+        filename_wavelet_coeff_map = _needletcoeffmap_filename(info,frequency,scale,season=season)
+
+        exists = os.path.isfile(filename_wavelet_coeff_map)
+
+        if query_exists:
+            return exists,filename_wavelet_coeff_map
+        elif exists:
+            return hp.read_map(filename_wavelet_coeff_map, dtype=np.float64)
+
+    def hdf5_load_wavelet_coeff_map(self,frequency,scale,info,season=None,query_exists = False):
+
+        filename_wavelet_coeff_dataset = info.wavelet_coeff_hdf5_filename
+
+        if query_exists:
+            if not os.path.isfile(filename_wavelet_coeff_dataset):
+                exists = False
+            else:
+                f = h5py.File(filename_wavelet_coeff_dataset,'r')
+                if "freq"+str(a)+'_scale'+str(j) not in f.keys():
+                    exists = False
+                else:
+                    exists = True
+                f.close()
+            return exists,filename_wavelet_coeff_dataset
+
+        else:
+
+            f = h5py.File(filename_wavelet_coeff_dataset,'r')
+
+            wavelet_coeff_map =f["freq"+str(a)+'_scale'+str(j)][()]
+
+            f.close()
+
+            return wavelet_coeff_map
+
+
+    def load_wavelet_coeff_map(self,frequency,scale,info,season=None,query_exists = False):
+
+            if info.save_as_fits:
+
+                return self.fits_load_wavelet_coeff_map(frequency,scale,info,season=None,query_exists = False)
+
+            elif info.save_as_hdf5:
+
+                return self.hdf5_load_wavelet_coeff_map(frequency,scale,info,season=None,query_exists = False)
+
+    
+    def save_wavelet_coeff_map(self,frequency,scale,info,wavelet_coeff_map,season=None):
+
+        if info.save_as_fits:
+
+            filename_wavelet_coeff_map = _needletcoeffmap_filename(info,frequency,scale,season=season)
+
+            hp.write_map(filename_wavelet_coeff_map, wavelet_coeff_map,nest=False, dtype=np.float64, overwrite=False)
+
+        elif info.save_as_hdf5:
+              
+            filename_wavelet_coeff_dataset =  info.wavelet_coeff_hdf5_filename
+
+            f = h5py.File(filename_wavelet_coeff_dataset,'a')
+
+            f.create_dataset("freq"+str(frequency)+'_scale'+str(scale),wavelet_coeff_map.shape,data=wavelet_coeff_map)
+
+            f.close()
+
+    def fits_load_covmap(self,frequency1,frequency2,scale,info,query_exists = False):
+        filename = _cov_filename(info,frequency1,frequency2,scale)
+        exists = os.path.isfile(filename)
+        if query_exists:
+            return exists,filename
+        elif exists:
+            return hp.read_map(filename, dtype=np.float64)
+
+    def hdf5_load_covmap(self,frequency1,frequency2,scale,info,query_exists = False):
+
+        filename_covmaps_dataset = info.covmaps_hdf5_filename
+
+        if query_exists:
+
+            if not os.path.isfile(filename_covmaps_dataset):
+                exists = False
+            else:
+                f = h5py.File(filename_covmaps_dataset,'r')
+                if "freq"+str(frequency1)+'_'+str(frequency2)+'_scale'+str(scale) not in f.keys():
+                    exists = False
+                else:
+                    exists = True
+                f.close()
+            return exists,filename_wavelet_coeff_dataset
+
+        else:
+            f = h5py.File(filename_covmaps_dataset,'r')
+
+            covmap = f["freq"+str(frequency1)+'_'+str(frequency2)+'_scale'+str(scale)][()]
+
+            f.close()
+            return covmap
+
+
+
+    def load_covmap(self,frequency1,frequency2,scale,info,query_exists = False):
+
+        if info.save_as_fits:
+
+            return self.fits_load_covmap(frequency1,frequency2,scale,info,query_exists = query_exists)
+
+        elif info.save_as_hdf5:
+
+            return self.hdf5_load_covmap(frequency1,frequency2,scale,info,query_exists = query_exists)
+
+    def save_covmap(self,frequency1,frequency2,scale,info,covmap,query_exists = False):
+
+        if info.save_as_fits:
+
+            filename = _cov_filename(info,frequency1,frequency2,scale)
+        
+            hp.write_map(filename, covmap,nest=False, dtype=np.float64, overwrite=False)
+
+        elif info.save_as_hdf5:
+
+            filename_covmaps_dataset = info.covmaps_hdf5_filename
+
+            f = h5py.File(filename_covmaps_dataset,'a')
+
+            f.create_dataset("freq"+str(frequency1)+'_'+str(frequency2)+'_scale'+str(scale),covmap.shape,data=covmap)
+
+            f.close()
+
     def ILC_at_scale_j(self,j,info,resp_tol,map_images=False):
         ## Performs the full ILC at scale j
 
@@ -797,12 +910,10 @@ class scale_info(object):
         count=0
         for a in range(info.N_freqs):
             if (self.freqs_to_use[j][a] == True):
-                filename_wavelet_coeff_map = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(a)+'_scale'+str(j)+'.fits'
                 if not info.apply_weights_to_other_maps:
-                    wavelet_coeff_map = hp.read_map(filename_wavelet_coeff_map, dtype=np.float64)
+                    wavelet_coeff_map = self.load_wavelet_coeff_map(a,j,info)
                 else:
                     wavelet_coeff_map =maps_for_weights_needlets[a][j]
-                #wavelet_coeff_map = hp.read_map(filename_wavelet_coeff_map, dtype=np.float64)
                 ILC_map_temp += weights[:,count] * wavelet_coeff_map
                 count+=1
 
@@ -939,11 +1050,10 @@ def waveletize_input_maps(info,scale_info_wvs,wv,map_images = False):
             flag=True
             for j in range(wv.N_scales):
                 if freqs_to_use[j][i] == True:
-                    filename = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(i)+'_scale'+str(j)+'.fits'
-                    exists = os.path.isfile(filename)
+                    exists,filename = self.load_wavelet_coeff_map(i,j,info,query_exists = True)
                     if exists:
                         print('needlet coefficient map already exists:', filename,flush=True)
-                        wv_maps_temp.append( hp.read_map(filename, dtype=np.float64) )
+                        wv_maps_temp.append( self.load_wavelet_coeff_map(i,j,info))
                     else:
                         print('needlet coefficient map not previously computed; computing all maps for frequency '+str(i)+' now...',flush=True)
                         flag=False
@@ -952,8 +1062,7 @@ def waveletize_input_maps(info,scale_info_wvs,wv,map_images = False):
                 wv_maps_temp = waveletize(inp_map=(info.maps)[i], wv=wv, rebeam=True, inp_beam=(info.beams)[i], new_beam=info.common_beam, wv_filts_to_use=freqs_to_use[:,i], N_side_to_use=N_side_to_use)
                 for j in range(wv.N_scales):
                     if freqs_to_use[j][i] == True:
-                        filename = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(i)+'_scale'+str(j)+'.fits'
-                        hp.write_map(filename, wv_maps_temp[j], nest=False, dtype=np.float64, overwrite=False)
+                        self.save_wavelet_coeff_map(i,j,info,wv_maps_temp[j],season=None)
             if map_images == True:
                 for j in range(wv.N_scales):
                     if freqs_to_use[j][i] == True:
@@ -967,11 +1076,10 @@ def waveletize_input_maps(info,scale_info_wvs,wv,map_images = False):
                     wv_maps_temp = []
                     for j in range(wv.N_scales):
                         if freqs_to_use[j][i] == True:
-                            filename = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(i)+'_scale'+str(j)+'_S'+str(season)+'.fits'
-                            exists = os.path.isfile(filename)
+                            exists,filename  = self.load_wavelet_coeff_map(i,j,info,query_exists = True,season=season)
                             if exists:
-                                print('needlet coefficient map already exists:', filename,)
-                                wv_maps_temp.append( hp.read_map(filename, dtype=np.float64, verbose=False) )
+                                print('needlet coefficient map already exists:', filename,flush=True)
+                                wv_maps_temp.append( self.load_wavelet_coeff_map(i,j,info,season=season))
                             else:
                                 print('needlet coefficient map not previously computed; computing all '+str(season)+'maps for frequency '+str(i)+' now...',)
                                 flag=False
@@ -988,13 +1096,19 @@ def waveletize_input_maps(info,scale_info_wvs,wv,map_images = False):
                         wv_maps_temp = waveletize(inp_map=(maps)[i], wv=wv, rebeam=True, inp_beam=(info.beams)[i], new_beam=newbeam, wv_filts_to_use=freqs_to_use[:,i], N_side_to_use=N_side_to_use)
                         for j in range(wv.N_scales):
                             if freqs_to_use[j][i] == True:
-                                filename = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(i)+'_scale'+str(j)+'_S'+str(season)+'.fits'
-                                exists2 = os.path.isfile(filename)
-                                if not exists2:
-                                    hp.write_map(filename, wv_maps_temp[j], nest=False, dtype=np.float64, overwrite=False)
+                                self.save_wavelet_coeff_map(i,j,info,wv_maps_temp[j],season=season) #need to check if they exist first
                         del(maps) #free up memory
             del wv_maps_temp #free up memory
 
+def _needletcoeffmap_filename(info,freq,scale,season=None):
+
+    if season is None:
+        filename_wavelet_coeff_map = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(freq)+'_scale'+str(scale)+'.fits'
+    else:
+        assert season in [1,2]
+        filename_wavelet_coeff_map = info.output_dir+info.output_prefix+'_needletcoeffmap_freq'+str(freq)+'_scale'+str(scale)+'_S'+str(season)+'.fits'
+
+    return filename_wavelet_coeff_map
 
 
 def _cov_filename(info,freq1,freq2,scale):
@@ -1012,6 +1126,9 @@ def _cov_filename(info,freq1,freq2,scale):
         cov_filename = info.output_dir+info.output_prefix+'_needletcoeff_covmap_freq'+str(a)+'_freq'+str(b)+'_scale'+str(j)+'_crossILC'*info.cross_ILC+'_Ndeproj'+str(N_deproj)+'.fits'
 
     return cov_filename
+
+
+
 
 def _inv_cov_filename(info,scale,freq1,freq2):
     a = freq1
