@@ -1,4 +1,5 @@
 from __future__ import print_function
+import time
 import numpy as np
 import healpy as hp
 from astropy.io import fits
@@ -458,6 +459,7 @@ class scale_info(object):
                 a_min = a
                 break
         # get the mask that we don't care about computing outside of:
+        t1=time.time()
         if info.mask_before_covariance_computation is not None:
 
             dgraded_mask = hp.ud_grade(info.mask_before_covariance_computation,self.N_side_to_use[j])
@@ -470,11 +472,13 @@ class scale_info(object):
                 assert np.sum(dgraded_mask)>0
         else:
             dgraded_mask = np.ones(self.N_pix_to_use[j])
-
+        print("defined mask in",time.time()-t1)
         ### for each filter scale, perform cov matrix inversion and compute maps of the ILC weights using the inverted cov matrix maps
         weights = np.zeros((int(self.N_pix_to_use[j]),int(self.N_freqs_to_use[j])))
 
         ### construct the matrix Q_{alpha beta} defined in Eq. 30 of McCarthy & Hill 2023 for each pixel at this wavelet scale and evaluate Eq. 29 to get weights ###
+
+        t1=time.time()
         covmat_temp = np.zeros((int(self.N_freqs_to_use[j]),int(self.N_freqs_to_use[j]), int(self.N_pix_to_use[j])))
         count=0
         for a in range(info.N_freqs):
@@ -486,13 +490,16 @@ class scale_info(object):
                         covmat_temp[b-a_min][a-a_min] = covmat_temp[a-a_min][b-a_min] #symmetrize
                     count+=1
         covmat_temp_transpose=np.transpose(covmat_temp,(2,1,0))
-
-        tmp1 = np.zeros((self.N_freqs_to_use[j],self.N_pix_to_use[j]))
-
-        tmp1[:,:,dgraded_mask!=0] = np.transpose(np.linalg.solve(covmat_temp_transpose[dgraded_mask!=0],np.transpose(A_mix[None,:,:])))
-
+        print("defined covmat temp in",time.time()-t1)
+        tmp1 = np.zeros((N_comps,self.N_freqs_to_use[j],self.N_pix_to_use[j]))
+        t1=time.time()
+        tmp1[:,:,dgraded_mask!=0] = np.transpose(np.linalg.solve(covmat_temp_transpose[dgraded_mask!=0],A_mix[None,:,:]))
+        print("got tmp1 in ",time.time()-t1)
+        t1=time.time()
         Qab_pix = np.einsum('ajp,bj->abp', tmp1, np.transpose(A_mix))
+        print("got Qab in",time.time()-t1)
         # compute weights
+        t1=time.time()
         tempvec = np.zeros((N_comps, int(self.N_pix_to_use[j])))
         # treat the no-deprojection case separately, since QSa_temp is empty in this case
         if (N_comps == 1):
@@ -501,14 +508,20 @@ class scale_info(object):
             for a in range(N_comps):
                 QSa_temp = np.delete(np.delete(Qab_pix, a, 0), 0, 1) #remove the a^th row and zero^th column
                 tempvec[a] = (-1.0)**float(a) * np.linalg.det(np.transpose(QSa_temp,(2,0,1)))
+        print("got tempvec in",time.time()-t1)
+        t1=time.time()
         tmp2 = np.einsum('ia,ap->ip', A_mix, tempvec)
-
+        print("got tmp2 in",time.time()-t1)
+        t1=time.time()
         tmp3 = np.zeros((self.N_freqs_to_use[j],self.N_pix_to_use[j]))
         tmp3[:,dgraded_mask!=0] =  np.transpose(np.linalg.solve(covmat_temp_transpose[dgraded_mask!=0],np.transpose(tmp2[:,dgraded_mask!=0])))
+        print("got tmp3 in",time.time()-t1)
+        t1=time.time()
 
         weights[dgraded_mask!=0] = 1.0/np.linalg.det(np.transpose(Qab_pix[:,:,dgraded_mask!=0],(2,0,1)))[:,None]*np.transpose(tmp3[:,dgraded_mask!=0]) #N.B. 'weights' here only includes channels that passed beam_thresh criterion,
 
-
+        print("got weights in",time.time()-t1)
+        t1=time.time()
         # response verification
         response = np.einsum('pi,ia->ap', weights, A_mix) #dimensions N_comps x N_pix_to_use[j]
         optimal_response_preserved_comp = np.ones(int(self.N_pix_to_use[j]))  #preserved component, want response=1
@@ -521,10 +534,12 @@ class scale_info(object):
             if not (np.absolute(response[1:,dgraded_mask!=0]-optimal_response_deproj_comp[:,dgraded_mask!=0]) < resp_tol).all():
                 print(f'deprojected component response failed at wavelet scale {j}')
                 quit()
+        print("done response verification in",time.time()-t1)
         return weights
 
     def compute_weights_at_scale_j_from_covmat(self,j,info,resp_tol,map_images = False):
             # Computes the ILC weights at scale j  without ever computing the invcovmat (using np.linalg.solv instead of np.linalg.inv)
+            t1=time.time()
             if type(info.N_deproj) is int:
                 N_deproj = info.N_deproj
                 if N_deproj>0:
@@ -559,10 +574,11 @@ class scale_info(object):
                                 break
             if flag == False:
                     cov_maps_temp = self.compute_covariance_at_scale(info,j,self.FWHM_pix)
-            
+            print("got covmats in",time.time()-t1)    
             # compute the weights
+            t1=time.time()
             weights = self.weights_from_covmat_at_scale_j(info,j,cov_maps_temp,A_mix,resp_tol)
-
+            print("calcweights in",time.time()-t1)
             del cov_maps_temp #free up memory
             print('done computing all ILC weights at scale '+str(j))
             ##########################
